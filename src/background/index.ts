@@ -9,6 +9,7 @@ import {
 } from "~sync/common";
 import QuantumEntanglementKeepAlive from "../utils/keep-alive";
 import { linkExtensionMessageHandler, starter } from "./services/api";
+import { coordinator } from "./services/coordinator";
 import {
   addTabsManagerMessages,
   tabsManagerHandleTabRemoved,
@@ -105,6 +106,24 @@ const defaultMessageHandler = (request, _sender, sendResponse) => {
     sendResponse({ extensionId: chrome.runtime.id });
     return true;
   }
+  if (request.action === "MULTIPOST_COORDINATOR_STATUS") {
+    sendResponse({ connected: coordinator.connected, profileId: coordinator.profileId });
+    return true;
+  }
+  if (request.action === "MULTIPOST_COORDINATOR_GET_ACCOUNTS") {
+    coordinator
+      .getAccounts()
+      .then((accounts) => sendResponse({ accounts }))
+      .catch((error) => sendResponse({ error: String(error instanceof Error ? error.message : error) }));
+    return true;
+  }
+  if (request.action === "MULTIPOST_COORDINATOR_REFRESH_ACCOUNTS") {
+    coordinator
+      .updateAccounts()
+      .then(() => sendResponse({ status: "ok" }))
+      .catch((error) => sendResponse({ error: String(error instanceof Error ? error.message : error) }));
+    return true;
+  }
   if (request.action === "MULTIPOST_EXTENSION_REFRESH_ACCOUNT_INFOS") {
     chrome.windows.create({
       url: chrome.runtime.getURL("tabs/refresh-accounts.html"),
@@ -123,6 +142,26 @@ const defaultMessageHandler = (request, _sender, sendResponse) => {
   if (request.action === "MULTIPOST_EXTENSION_PUBLISH_NOW") {
     const data = request.data as SyncData;
     if (Array.isArray(data.platforms) && data.platforms.length > 0) {
+      // Coordinated mode: if any platform targets a specific accountId, dispatch
+      // through the coordinator so each account publishes from its own Profile.
+      const hasAccountTarget = data.platforms.some((p) => p.accountId);
+      if (coordinator.connected && hasAccountTarget) {
+        (async () => {
+          try {
+            const results = await coordinator.publish(data);
+            sendResponse({ coordinated: true, results });
+          } catch (error) {
+            console.error("协调发布失败:", error);
+            sendResponse({
+              coordinated: true,
+              results: [],
+              error: String(error instanceof Error ? error.message : error),
+            });
+          }
+        })();
+        return true;
+      }
+
       (async () => {
         try {
           const tabs = await createTabsForPlatforms(data);
@@ -168,6 +207,10 @@ const defaultMessageHandler = (request, _sender, sendResponse) => {
 };
 starter(1000 * 30);
 // Message Handler || 消息处理器 || END
+
+// Coordinator || 多 Profile 协调 || START
+coordinator.start();
+// Coordinator || 多 Profile 协调 || END
 
 // Keep Alive || 保活机制 || START
 const quantumKeepAlive = new QuantumEntanglementKeepAlive();

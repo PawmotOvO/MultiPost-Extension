@@ -1,0 +1,14 @@
+{
+  "name": "coordinator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MultiPost multi-profile coordination service",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "setup": "node setup-profiles.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

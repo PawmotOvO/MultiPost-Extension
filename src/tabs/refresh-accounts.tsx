@@ -54,6 +54,9 @@ const RefreshAccounts = () => {
         errors: result.errors,
       });
 
+      // 通知协调服务更新本 Profile 的账号列表
+      chrome.runtime.sendMessage({ action: "MULTIPOST_COORDINATOR_REFRESH_ACCOUNTS" });
+
       // 清除之前的定时器
       if (autoCloseTimerRef.current) {
         clearTimeout(autoCloseTimerRef.current);

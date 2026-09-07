@@ -12,7 +12,9 @@
     "lint:fix": "biome check --fix",
     "format": "biome format --write",
     "lint:staged": "lint-staged",
-    "prepare": "husky"
+    "prepare": "husky",
+    "dev:coordinator": "pnpm --filter coordinator start",
+    "setup:profiles": "pnpm --filter coordinator setup"
   },
   "dependencies": {
     "@heroui/react": "2.7.8",
@@ -73,7 +75,7 @@
     "externally_connectable": {
       "matches": ["https://paiban.md/*", "http://localhost:2663/*"]
     },
-    "host_permissions": ["https://*/*"],
+    "host_permissions": ["https://*/*", "http://localhost:*/*"],
     "permissions": ["activeTab", "tabs", "scripting", "tabGroups", "sidePanel", "clipboardWrite", "clipboardRead"],
     "web_accessible_resources": [
       {

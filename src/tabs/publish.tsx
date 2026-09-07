@@ -13,6 +13,7 @@ import {
   type SyncData,
   type SyncDataPlatform,
   type VideoData,
+  getRawPlatformInfo,
   injectScriptsToTabs,
 } from "~sync/common";
 
@@ -69,6 +70,13 @@ export default function Publish() {
   const [syncCloseTabs, setSyncCloseTabs] = useState(false);
   const [countdown, setCountdown] = useState<number>(0);
   const [autoCloseDelay, setAutoCloseDelay] = useState<number>(DEFAULT_AUTO_CLOSE_DELAY);
+
+  // 协调模式：多 Profile 多账号
+  const [coordinatorAccounts, setCoordinatorAccounts] = useState<
+    Array<{ provider: string; accountId: string; username: string; profileId: string }>
+  >([]);
+  const [selectedAccountIds, setSelectedAccountIds] = useState<Record<string, string>>({});
+  const [awaitingAccountSelection, setAwaitingAccountSelection] = useState(false);
   const autoCloseTimerRef = useRef<number>();
   const countdownTimerRef = useRef<number>();
   const sysnCloseTabsRef = useRef<boolean>(false);
@@ -488,8 +496,23 @@ export default function Publish() {
   // 发布完成后的处理逻辑
   const handlePublishComplete = async (response: {
     tabs?: Array<{ tab: chrome.tabs.Tab; platformInfo: SyncDataPlatform }>;
+    coordinated?: boolean;
+    results?: Array<{ platform: string; accountId?: string; status: string; error?: string }>;
   }) => {
     setIsProcessing(false);
+
+    // 协调模式：处理来自各 Profile 的聚合结果
+    if (response?.coordinated) {
+      const results = response.results || [];
+      const successCount = results.filter((r) => r.status === "success").length;
+      setNotice(`协调发布完成：${successCount}/${results.length} 个账号成功`);
+      if (results.some((r) => r.status === "failed")) {
+        const failed = results.filter((r) => r.status === "failed");
+        setErrors(failed.map((r) => `${r.platform}: ${r.error || "发布失败"}`));
+      }
+      return;
+    }
+
     setNotice(chrome.i18n.getMessage("publishComplete"));
 
     // 存储返回的 tabs 数据
@@ -518,6 +541,32 @@ export default function Publish() {
 
     // 发布完成，倒计时已经在页面加载时启动
     console.log("发布完成");
+  };
+
+  // 协调模式：用户选择账号后确认发布
+  const handleConfirmAccountSelection = () => {
+    if (!data) return;
+    setAwaitingAccountSelection(false);
+    setIsProcessing(true);
+    setNotice("正在协调多账号发布...");
+
+    const enriched: SyncData = {
+      ...data,
+      platforms: data.platforms.map((p) => {
+        const selected = selectedAccountIds[p.name];
+        if (selected) return { ...p, accountId: selected };
+        // 未显式选择的平台，自动取该平台的第一个可用账号
+        const info = getRawPlatformInfo(p.name);
+        const key = info?.accountKey;
+        const acc = key ? coordinatorAccounts.find((a) => a.provider === key) : undefined;
+        return acc ? { ...p, accountId: acc.accountId } : p;
+      }),
+    };
+
+    setTimeout(async () => {
+      await focusMainWindow();
+      chrome.runtime.sendMessage({ action: "MULTIPOST_EXTENSION_PUBLISH_NOW", data: enriched }, handlePublishComplete);
+    }, 500);
   };
 
   useEffect(() => {
@@ -554,13 +603,59 @@ export default function Publish() {
 
         console.log(processedData);
 
-        setTimeout(async () => {
-          await focusMainWindow();
-          chrome.runtime.sendMessage(
-            { action: "MULTIPOST_EXTENSION_PUBLISH_NOW", data: processedData },
-            handlePublishComplete,
-          );
-        }, 1000 * 1);
+        // 检查协调服务连接状态，决定是否需要多账号选择
+        chrome.runtime.sendMessage({ action: "MULTIPOST_COORDINATOR_STATUS" }, async (statusResp) => {
+          const connected = !!statusResp?.connected;
+
+          const performPublish = (dataToPublish: SyncData) => {
+            setTimeout(async () => {
+              await focusMainWindow();
+              chrome.runtime.sendMessage(
+                { action: "MULTIPOST_EXTENSION_PUBLISH_NOW", data: dataToPublish },
+                handlePublishComplete,
+              );
+            }, 1000 * 1);
+          };
+
+          if (!connected) {
+            // 非协调模式：直接发布
+            performPublish(processedData);
+            return;
+          }
+
+          // 协调模式：拉取所有 Profile 的账号列表
+          chrome.runtime.sendMessage({ action: "MULTIPOST_COORDINATOR_GET_ACCOUNTS" }, (accResp) => {
+            const accounts = accResp?.accounts || [];
+            setCoordinatorAccounts(accounts);
+
+            // 判断是否有平台存在多个可选账号
+            const platformNames = processedData.platforms.map((p) => p.name);
+            const multiAccountPlatforms = platformNames.filter((name) => {
+              const info = getRawPlatformInfo(name);
+              const key = info?.accountKey;
+              return key && accounts.filter((a) => a.provider === key).length > 1;
+            });
+
+            if (multiAccountPlatforms.length > 0) {
+              // 需要用户选择账号
+              setAwaitingAccountSelection(true);
+              setNotice("检测到多个账号，请选择发布目标");
+              setIsProcessing(false);
+            } else {
+              // 每个平台只有一个账号，自动填充 accountId 并发布
+              const enriched: SyncData = {
+                ...processedData,
+                platforms: processedData.platforms.map((p) => {
+                  const info = getRawPlatformInfo(p.name);
+                  const key = info?.accountKey;
+                  const acc = key ? accounts.find((a) => a.provider === key) : undefined;
+                  return acc ? { ...p, accountId: acc.accountId } : p;
+                }),
+              };
+              performPublish(enriched);
+            }
+          });
+        });
       } catch (error) {
         console.error("处理内容时出错:", error);
         setNotice(chrome.i18n.getMessage("errorProcessContent"));
@@ -588,6 +683,37 @@ export default function Publish() {
             size="sm"
           />
           {notice && <p className="text-sm text-center text-muted-foreground">{notice}</p>}
+
+          {/* 协调模式：多账号选择 */}
+          {awaitingAccountSelection && data && (
+            <div className="space-y-3 p-3 border border-default-200 rounded-lg">
+              <p className="text-sm font-medium text-foreground">请选择各平台发布账号</p>
+              {data.platforms.map((p) => {
+                const info = getRawPlatformInfo(p.name);
+                const key = info?.accountKey;
+                const accounts = key ? coordinatorAccounts.filter((a) => a.provider === key) : [];
+                if (accounts.length <= 1) return null;
+                return (
+                  <div key={p.name} className="flex flex-col gap-1">
+                    <label className="text-xs text-muted-foreground">{info?.platformName || p.name}</label>
+                    <select
+                      className="w-full px-2 py-1 text-sm border border-default-300 rounded bg-background text-foreground"
+                      value={selectedAccountIds[p.name] || accounts[0]?.accountId || ""}
+                      onChange={(e) => setSelectedAccountIds((prev) => ({ ...prev, [p.name]: e.target.value }))}>
+                      {accounts.map((a) => (
+                        <option key={a.accountId} value={a.accountId}>
+                          {a.username} ({a.profileId.slice(0, 8)})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                );
+              })}
+              <Button color="primary" size="sm" className="w-full" onPress={handleConfirmAccountSelection}>
+                确认并发布
+              </Button>
+            </div>
+          )}
 
           {/* 调试信息 */}
           {/* <div className="text-xs text-center text-gray-400">

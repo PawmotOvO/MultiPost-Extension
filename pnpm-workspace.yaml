@@ -1,3 +1,6 @@
+packages:
+  - "."
+  - "coordinator"
 onlyBuiltDependencies:
   - '@heroui/shared-utils'
   - '@parcel/watcher'

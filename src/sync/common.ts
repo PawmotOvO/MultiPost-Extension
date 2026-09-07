@@ -8,6 +8,7 @@ import { VideoInfoMap } from "./video";
 export interface SyncDataPlatform {
   name: string;
   injectUrl?: string;
+  accountId?: string; // 协调模式下指定发布到哪个账号（多 Profile）
   extraConfig?:
     | {
         customInjectUrls?: string[]; // Beta 功能，用于自定义注入 URL
